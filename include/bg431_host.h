@@ -57,9 +57,11 @@ class Bg431Host {
   uint32_t seqGaps = 0;           // samples lost (board drop or RX overflow)
   uint32_t rxOverflows = 0;       // MCP25625 receive-buffer overflows (EFLG RXnOVR)
   uint32_t txBusy = 0;            // sends that found all three TX buffers busy
+  uint32_t maxPollGapUs = 0;      // longest time between two poll() calls (reset by the caller)
 
  private:
   bool send(uint32_t id, const void* data, uint8_t len);
+  bool readFrame(can_frame& f);
   void handle(const can_frame& f);
   void telemFrame(uint8_t k, const uint8_t* d);
   void resultFrame(const uint8_t* d, uint8_t len);
@@ -70,6 +72,7 @@ class Bg431Host {
   uint8_t cs_, int_, reset_;
   uint32_t spi_hz_ = 0;
   uint32_t lastKeepaliveMs_ = 0;
+  uint32_t lastPollUs_ = 0;
 
   // telemetry reassembly
   bg431::Sample part_;

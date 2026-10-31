@@ -45,8 +45,10 @@ enum ConfigKey : uint8_t {
 };
 
 // ---- command results (0x281): header frame, then `len` payload bytes ----
+// ST_ prefix: the Spresense SDK (NuttX) already defines OK.
 enum Status : uint8_t {
-  OK = 0, INVALID_ARG = 1, REFUSED = 2, FAILED = 3, ABORTED = 4, TIMEOUT = 5, UNKNOWN_CMD = 6,
+  ST_OK = 0, ST_INVALID_ARG = 1, ST_REFUSED = 2, ST_FAILED = 3, ST_ABORTED = 4, ST_TIMEOUT = 5,
+  ST_UNKNOWN_CMD = 6,
 };
 enum Detail : uint8_t {
   DET_NONE = 0, DET_DISABLED = 1, DET_SENSOR_FAULT = 2, DET_RUNAWAY = 3, DET_MOTOR_DISABLED = 4,

@@ -138,12 +138,17 @@ void printResult(const char* line) {
 bool run(const char* line, uint32_t timeout_ms = 10000, Bg431Host::SampleFn fn = nullptr, void* ctx = nullptr) {
   host.command(line, cmd, timeout_ms, fn, ctx);
   printResult(line);
-  return cmd.completed && cmd.result.valid && cmd.result.hdr.status == OK;
+  return cmd.completed && cmd.result.valid && cmd.result.hdr.status == ST_OK;
 }
 
+// Any key but a line ending (the rest of the "jump" line's CR LF) aborts.
 bool abortRequested() {
-  if (Serial.available()) {
-    while (Serial.available()) Serial.read();
+  bool key = false;
+  while (Serial.available()) {
+    int c = Serial.read();
+    if (c != '\r' && c != '\n') key = true;
+  }
+  if (key) {
     host.estop();
     Serial.println("!!! key pressed: E-stop sent. Re-enable with G then ME1 after checking the position");
     return true;
@@ -214,11 +219,11 @@ void jump(int count, bool keepOrigin) {
     Serial.print(" rad/s  samples ");
     Serial.println(rs.n);
 
-    if (h.status != OK && h.status != TIMEOUT) { stopDrive("H did not finish normally"); break; }
+    if (h.status != ST_OK && h.status != ST_TIMEOUT) { stopDrive("H did not finish normally"); break; }
     if (fabsf(m.err) > kMaxErr) { stopDrive("final error too large"); break; }
     if (rs.iq_peak > kMaxCurrent) { stopDrive("current peak too high"); break; }
     done++;
-    if (h.status == OK) ok++;
+    if (h.status == ST_OK) ok++;
     if (!isnan(rs.arrival_ms)) {
       arr_sum += rs.arrival_ms;
       arr_min = fminf(arr_min, rs.arrival_ms);
@@ -267,7 +272,11 @@ void printStats() {
   Serial.print(", RX overflows ");
   Serial.print(host.rxOverflows);
   Serial.print(", TX busy ");
-  Serial.println(host.txBusy);
+  Serial.print(host.txBusy);
+  Serial.print(", max poll gap ");
+  Serial.print(host.maxPollGapUs);
+  Serial.println(" us");
+  host.maxPollGapUs = 0;
 }
 
 void handleLine(char* line) {

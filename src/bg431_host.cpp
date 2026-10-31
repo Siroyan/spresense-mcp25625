@@ -10,6 +10,8 @@ namespace {
 // MCP2515 SPI instructions and registers used directly (the library keeps its
 // register access private).
 constexpr uint8_t INSTR_WRITE = 0x02, INSTR_READ = 0x03;
+constexpr uint8_t INSTR_READ_STATUS = 0xA0;       // bit 0 RX0IF, bit 1 RX1IF
+constexpr uint8_t INSTR_READ_RX0 = 0x90, INSTR_READ_RX1 = 0x94;   // from SIDH; clears RXnIF on CS high
 constexpr uint8_t REG_CNF3 = 0x28;            // CNF3, CNF2, CNF1 are consecutive
 constexpr uint8_t REG_TXB0D0 = 0x36;          // 8 bytes of scratch for the SPI test
 
@@ -121,19 +123,23 @@ bool Bg431Host::begin(uint32_t spi_hz, Print& log) {
     return false;
   }
 
-  // Only what the host uses reaches the two receive buffers:
-  //   RXB0: telemetry T1..T4 (0x101/111/121/131 differ only in bits 4-5),
-  //         rolling over into RXB1 when full
-  //   RXB1: events, results, status
+  // Only what the host uses reaches the receive buffers, and everything
+  // that arrives back to back goes to RXB0, which rolls over into RXB1 when
+  // full -- two frames of slack instead of one:
+  //   RXB0, mask 0x74F (ignores bits 4, 5 and 7):
+  //     RXF0 0x101 -> telemetry 0x101/111/121/131
+  //     RXF1 0x201 -> event 0x201 and result 0x281
+  //     (the other IDs these also pass, 0x181.. / 0x211.., are unused)
+  //   RXB1: status 0x701 (10 Hz, not urgent)
   // Console text (0x581) and everything else is dropped in hardware.
-  if (can_->setFilterMask(MCP2515::MASK0, false, 0x7CF) != MCP2515::ERROR_OK ||
+  if (can_->setFilterMask(MCP2515::MASK0, false, 0x74F) != MCP2515::ERROR_OK ||
       can_->setFilter(MCP2515::RXF0, false, ID_TELEM) != MCP2515::ERROR_OK ||
-      can_->setFilter(MCP2515::RXF1, false, ID_TELEM) != MCP2515::ERROR_OK ||
+      can_->setFilter(MCP2515::RXF1, false, ID_EVENT) != MCP2515::ERROR_OK ||
       can_->setFilterMask(MCP2515::MASK1, false, 0x7FF) != MCP2515::ERROR_OK ||
-      can_->setFilter(MCP2515::RXF2, false, ID_EVENT) != MCP2515::ERROR_OK ||
-      can_->setFilter(MCP2515::RXF3, false, ID_RESULT) != MCP2515::ERROR_OK ||
+      can_->setFilter(MCP2515::RXF2, false, ID_STATUS) != MCP2515::ERROR_OK ||
+      can_->setFilter(MCP2515::RXF3, false, ID_STATUS) != MCP2515::ERROR_OK ||
       can_->setFilter(MCP2515::RXF4, false, ID_STATUS) != MCP2515::ERROR_OK ||
-      can_->setFilter(MCP2515::RXF5, false, ID_EVENT) != MCP2515::ERROR_OK)
+      can_->setFilter(MCP2515::RXF5, false, ID_STATUS) != MCP2515::ERROR_OK)
     return false;
   if (can_->setNormalMode() != MCP2515::ERROR_OK) return false;
   log.println("CAN 1 Mbps, sample point 75%, normal mode");
@@ -166,11 +172,41 @@ void Bg431Host::estop() {
   send(ID_ESTOP, &d, 1);
 }
 
+// One received frame in two SPI transactions (READ STATUS, READ RX BUFFER)
+// instead of the library's five: the board sends a frame every ~0.2 ms and
+// the MCP25625 holds two.
+bool Bg431Host::readFrame(can_frame& f) {
+  SPI.beginTransaction(SPISettings(spi_hz_, MSBFIRST, SPI_MODE0));
+  digitalWrite(cs_, LOW);
+  SPI.transfer(INSTR_READ_STATUS);
+  uint8_t st = SPI.transfer(0);
+  digitalWrite(cs_, HIGH);
+  uint8_t instr = (st & 0x01) ? INSTR_READ_RX0 : (st & 0x02) ? INSTR_READ_RX1 : 0;
+  if (instr) {      // RXB0 first: under rollover it holds the older frame
+    uint8_t h[5];
+    digitalWrite(cs_, LOW);
+    SPI.transfer(instr);
+    for (int i = 0; i < 5; i++) h[i] = SPI.transfer(0);   // SIDH SIDL EID8 EID0 DLC
+    uint8_t dlc = h[4] & 0x0F;
+    if (dlc > 8) dlc = 8;
+    for (int i = 0; i < dlc; i++) f.data[i] = SPI.transfer(0);
+    digitalWrite(cs_, HIGH);
+    f.can_id = ((uint32_t)h[0] << 3) | (h[1] >> 5);
+    f.can_dlc = dlc;
+    if (h[1] & 0x08) f.can_id |= CAN_EFF_FLAG;   // extended: not ours, handle() ignores it
+  }
+  SPI.endTransaction();
+  return instr != 0;
+}
+
 void Bg431Host::poll() {
+  uint32_t now_us = micros();
+  if (lastPollUs_ && now_us - lastPollUs_ > maxPollGapUs) maxPollGapUs = now_us - lastPollUs_;
+  lastPollUs_ = now_us;
   // INT is low while a frame waits (or an error flag is set).
   for (int n = 0; n < 8 && digitalRead(int_) == LOW; n++) {
     can_frame f;
-    if (can_->readMessage(&f) == MCP2515::ERROR_OK) {
+    if (readFrame(f)) {
       handle(f);
       continue;
     }
@@ -190,6 +226,7 @@ void Bg431Host::poll() {
 }
 
 void Bg431Host::handle(const can_frame& f) {
+  if (f.can_id & CAN_EFF_FLAG) return;
   uint32_t id = f.can_id & CAN_SFF_MASK;
   if (id >= ID_TELEM && id <= ID_TELEM + 0x30 && ((id - ID_TELEM) & 0x0F) == 0 && f.can_dlc == 8) {
     telemFrame((uint8_t)((id - ID_TELEM) >> 4), f.data);
