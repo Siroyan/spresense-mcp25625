@@ -8,9 +8,9 @@
 #endif
 
 namespace {
-constexpr uint8_t kCsPin = 7;
+constexpr uint8_t kCsPin = 9;
 constexpr uint8_t kIntPin = 8;
-constexpr uint8_t kResetPin = 9;
+constexpr uint8_t kResetPin = 7;
 constexpr uint32_t kSpiHz = 1000000;
 constexpr uint32_t kIntervalMs = 1000;
 
@@ -28,7 +28,7 @@ void requireOk(MCP2515::ERROR result, const char *step) {
   Serial.print(step);
   Serial.print(" error=");
   Serial.println(static_cast<int>(result));
-  Serial.println("Check power, JP1, SPI wiring, CS D7 and RESET D9; then reset.");
+  Serial.println("Check power, JP1, SPI wiring, CS D9 and RESET D7; then reset.");
   while (true) {
     delay(1000);
   }

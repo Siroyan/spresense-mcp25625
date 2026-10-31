@@ -4,7 +4,7 @@ SPRESENSE 拡張ボードと [MCP25625-breakout](https://www.switch-science.com/
 
 ## 配線
 
-添付図に合わせた信号配線です。電源を切って接続してください。
+信号配線は以下のとおりです。当初の添付図から CS と RESET を入れ替えています。電源を切って接続してください。
 
 | SPRESENSE 拡張ボード | MCP25625-breakout |
 | --- | --- |
@@ -12,16 +12,16 @@ SPRESENSE 拡張ボードと [MCP25625-breakout](https://www.switch-science.com/
 | D12 | MISO |
 | D11 | MOSI |
 | D10 | 未接続 |
-| D9 | RESET（Low でリセット） |
+| D9 | CS |
 | D8 | INT（Low 有効） |
-| D7 | CS |
+| D7 | RST / RESET（Low でリセット） |
 | 5 V | VIO |
 | 5 V | VDDA |
 | GND | GND |
 
 **拡張ボードの JP1 を 5 V に設定し、VIO・VDDA ともに 5 V を供給してください。** VIO は SPI / RESET / INT の信号電圧、VDDA はトランシーバー電源です。本プロジェクトでは信号電圧も 5 V に統一します。電圧の設定は配線と JP1 で行うため、ソースコードの変更は不要です。
 
-D10 には接続しません。SPRESENSE の SPI はハードウェア CS を操作しますが、本コードは別途 D7 をソフトウェアで操作します。INT は割り込みハンドラーを使わず `loop()` でポーリングします。
+D10 には接続しません。SPRESENSE の SPI はハードウェア CS を操作しますが、本コードは別途 D9 をソフトウェアで操作します。INT は割り込みハンドラーを使わず `loop()` でポーリングします。
 
 ## 1. 1台で内部ループバック確認（標準設定）
 
@@ -63,7 +63,7 @@ pio device monitor -b 115200
 
 ## 問題が起きた場合
 
-- `INIT FAIL`: VIO / VDDA / GND、JP1、D7 の CS、D9 の RESET、SPI 3本を確認します。
+- `INIT FAIL`: VIO / VDDA / GND、JP1、D9 の CS、D7 の RESET、SPI 3本を確認します。
 - `LOOPBACK FAIL`: 電源、配線、16 MHz 発振子のボードかを確認します。
 - 通常モードで受信できない: 相手も 500 kbps か、CANH / CANL、GND、両端の終端抵抗を確認します。
 
