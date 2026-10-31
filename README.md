@@ -69,7 +69,15 @@ pio device monitor -b 115200
 
 ## 検証範囲
 
-`spresense` と `spresense_can` の両環境を PlatformIO でビルド確認済みです。実機への書き込み・実機通信は未実施です。
+`spresense` と `spresense_can` の両環境を PlatformIO でビルド確認済みです。
+
+2026-11-01 に USB 接続した SPRESENSE で以下を確認しました（対象コード: `cb5a224`）。
+
+- `/dev/cu.usbserial-1130` から `spresense` 環境の書き込みが成功し、パッケージ検証も成功。
+- CS=D9、INT=D8、RST=D7 のコードで MCP25625 の初期化に成功。
+- 115200 bps のシリアルログで、ID `0x123` / DLC=8 の内部送受信を確認。先頭バイト `00`～`08` の9回連続で `LOOPBACK PASS` を確認。
+
+この結果は SPI と MCP25625 内部ループバックの確認です。INT の信号動作、外部 CANH / CANL、トランシーバー、相手ノードとの通信は未確認です。実機にはループバック用コードを書き込んであります。
 
 ## 参考資料
 
