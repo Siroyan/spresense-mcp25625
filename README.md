@@ -15,11 +15,11 @@ SPRESENSE 拡張ボードと [MCP25625-breakout](https://www.switch-science.com/
 | D9 | RESET（Low でリセット） |
 | D8 | INT（Low 有効） |
 | D7 | CS |
-| 3.3 V | VIO |
+| 5 V | VIO |
 | 5 V | VDDA |
 | GND | GND |
 
-**この電源配線では拡張ボードの JP1 を 3.3 V に設定してください。** VIO は SPI / RESET / INT の信号電圧です。VDDA はトランシーバー電源なので 5 V を供給します。JP1 を 5 V で使う場合は VIO も 5 V に合わせてください。VIO=3.3 V のまま 5 V の信号を入力しないでください。
+**拡張ボードの JP1 を 5 V に設定し、VIO・VDDA ともに 5 V を供給してください。** VIO は SPI / RESET / INT の信号電圧、VDDA はトランシーバー電源です。本プロジェクトでは信号電圧も 5 V に統一します。電圧の設定は配線と JP1 で行うため、ソースコードの変更は不要です。
 
 D10 には接続しません。SPRESENSE の SPI はハードウェア CS を操作しますが、本コードは別途 D7 をソフトウェアで操作します。INT は割り込みハンドラーを使わず `loop()` でポーリングします。
 
