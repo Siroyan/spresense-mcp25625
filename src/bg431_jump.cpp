@@ -6,7 +6,7 @@
 // rev from the board's 1 kHz telemetry.
 //
 // Operated from the USB serial monitor (115200), one command per line:
-//   jump [n]        origin + settings + n revs (default 3); any key aborts (E-stop)
+//   jump [n]        origin + settings + n revs (default 1); any key aborts (E-stop)
 //   jumpk [n]       the same without setting the origin (keep the current one)
 //   origin          make the current position the origin (angle 0)
 //   home [v]        move slowly to the current origin (cruise v rad/s, default 30),
@@ -349,10 +349,10 @@ void printStats() {
 void handleLine(char* line) {
   if (strncmp(line, "jumpk", 5) == 0) {
     int n = atoi(line + 5);
-    jump(n > 0 ? n : 3, true);
+    jump(n > 0 ? n : 1, true);
   } else if (strncmp(line, "jump", 4) == 0) {
     int n = atoi(line + 4);
-    jump(n > 0 ? n : 3, false);
+    jump(n > 0 ? n : 1, false);
   } else if (strcmp(line, "origin") == 0) {
     if (!setOrigin()) Serial.println("!!! origin not set");
   } else if (strncmp(line, "home", 4) == 0) {
