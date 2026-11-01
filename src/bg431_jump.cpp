@@ -8,6 +8,9 @@
 // Operated from the USB serial monitor (115200), one command per line:
 //   jump [n]        origin + settings + n revs (default 3); any key aborts (E-stop)
 //   jumpk [n]       the same without setting the origin (keep the current one)
+//   origin          make the current position the origin (angle 0)
+//   home [v]        move slowly to the current origin (cruise v rad/s, default 30),
+//                   the short way round (at most half an output rev)
 //   c <command>     send one board command (e.g. "c Q", "c MVP") and print its result
 //   s               E-stop
 //   stat            link counters
@@ -35,8 +38,14 @@ const char* const kMoveSettings[] = {"A10000", "V460", "MVR1000", "MVP0.05"};
 const char* const kDefaults[] = {"A1000", "V145", "MVR150", "MVP0.02"};
 constexpr int kDirection = -1;          // negative: the tested direction
 constexpr uint32_t kHoldTimeoutMs = 2500;
-constexpr float kMaxErr = 0.2f;         // rad: a rev ending farther off stops the run
-constexpr float kMaxCurrent = 11.0f;    // A: peak above this stops the run
+constexpr float kMaxErr = 0.2f;         // rad: a move ending farther off stops the run
+constexpr float kMaxCurrent = 15.0f;    // A: peak above this stops the run
+
+// home: a gentle profile. Below ~20 rad/s cogging makes the motion jerky.
+constexpr float kHomeSpeed = 30.0f;     // rad/s on the motor shaft (~125 deg/s on the output)
+constexpr float kHomeSpeedMin = 5.0f, kHomeSpeedMax = 145.0f;
+const char* const kHomeAcc = "A200";
+constexpr uint32_t kHomeTimeoutMs = 15000;
 
 Bg431Host host(kCsPin, kIntPin, kResetPin);
 Bg431Host::Command cmd;
@@ -150,7 +159,7 @@ bool abortRequested() {
   }
   if (key) {
     host.estop();
-    Serial.println("!!! key pressed: E-stop sent. Re-enable with G then ME1 after checking the position");
+    Serial.println("!!! key pressed: E-stop sent. Check the position, then home (or c MC1, c ME1, c G)");
     return true;
   }
   return false;
@@ -159,15 +168,52 @@ bool abortRequested() {
 void stopDrive(const char* why) {
   Serial.print("!!! stopping: ");
   Serial.println(why);
-  if (!host.booted && run("ME0")) Serial.println("    drive disabled (ME0). Re-enable with G then ME1");
+  if (!host.booted && run("ME0"))
+    Serial.println("    drive disabled (ME0). Check the position, then home (or c MC1, c ME1, c G)");
 }
 
+// Enable the drive holding the current position. MC1 first: it sets a zero
+// velocity target, so ME1 cannot leap toward a stale angle target; G then
+// holds wherever the rotor is.
+bool enableHold() {
+  return run("MC1") && run("ME1") && run("G");
+}
+
+// The current position becomes angle 0. The offset only changes in velocity
+// mode: in angle mode the old target would stay in the old coordinates.
 bool setOrigin() {
-  Serial.println("== 1. origin (current position)");
+  Serial.println("== origin (current position)");
   if (!run("MC1") || !run("ME1") || !run("MSM0") || !run("Q")) return false;
   char line[24];
   snprintf(line, sizeof(line), "MSM%.4f", cmd.result.as<Sample>().measured_angle);
   return run(line) && run("Q") && run("G");
+}
+
+// GN: renormalise the angle to within half an output rev of the origin.
+// REFUSED while the rotor still moves -- wait and retry.
+bool normalize() {
+  for (int k = 0; k < 10; k++) {
+    if (run("GN")) return true;
+    uint32_t t = millis();
+    while (millis() - t < 200) host.poll();
+  }
+  return false;
+}
+
+void restoreDefaults() {
+  if (host.booted) return;     // the reboot already restored them
+  Serial.println("== restore defaults");
+  for (const char* c : kDefaults) run(c);
+}
+
+// Why a finished H must stop the run, or nullptr if it may go on.
+const char* moveProblem(const RevStats& rs) {
+  if (!cmd.completed || !cmd.result.valid) return host.booted ? "board rebooted" : "no result for H";
+  const ResultHeader& h = cmd.result.hdr;
+  if (h.status != ST_OK && h.status != ST_TIMEOUT) return "H did not finish normally";
+  if (fabsf(cmd.result.as<ResMove>().err) > kMaxErr) return "final error too large";
+  if (rs.iq_peak > kMaxCurrent) return "current peak too high";
+  return nullptr;
 }
 
 void jump(int count, bool keepOrigin) {
@@ -176,9 +222,9 @@ void jump(int count, bool keepOrigin) {
   float arr_sum = 0, arr_min = 1e9, arr_max = 0;
   int done = 0, ok = 0;
 
-  bool good = keepOrigin ? (run("ME1") && run("G")) : setOrigin();
+  bool good = keepOrigin ? enableHold() : setOrigin();
   if (good) {
-    Serial.println("== 2. max-speed settings");
+    Serial.println("== max-speed settings");
     for (const char* c : kMoveSettings) good = good && run(c);
   }
   for (int i = 1; good && i <= count; i++) {
@@ -193,7 +239,7 @@ void jump(int count, bool keepOrigin) {
     run(line, kHoldTimeoutMs + 10000, onSample, &rs);
 
     if (!cmd.completed || !cmd.result.valid) {
-      stopDrive(host.booted ? "board rebooted" : "no result for H");
+      stopDrive(moveProblem(rs));
       break;
     }
     const ResultHeader& h = cmd.result.hdr;
@@ -219,9 +265,7 @@ void jump(int count, bool keepOrigin) {
     Serial.print(" rad/s  samples ");
     Serial.println(rs.n);
 
-    if (h.status != ST_OK && h.status != ST_TIMEOUT) { stopDrive("H did not finish normally"); break; }
-    if (fabsf(m.err) > kMaxErr) { stopDrive("final error too large"); break; }
-    if (rs.iq_peak > kMaxCurrent) { stopDrive("current peak too high"); break; }
+    if (const char* why = moveProblem(rs)) { stopDrive(why); break; }
     done++;
     if (h.status == ST_OK) ok++;
     if (!isnan(rs.arrival_ms)) {
@@ -230,21 +274,10 @@ void jump(int count, bool keepOrigin) {
       arr_max = fmaxf(arr_max, rs.arrival_ms);
     }
 
-    bool normalized = false;
-    for (int k = 0; k < 10 && !normalized; k++) {
-      normalized = run("GN");
-      if (!normalized) {
-        t = millis();
-        while (millis() - t < 200) host.poll();   // REFUSED (moving): wait for the rotor to stop
-      }
-    }
-    if (!normalized) { stopDrive("GN refused"); break; }
+    if (!normalize()) { stopDrive("GN refused"); break; }
   }
 
-  if (!host.booted) {
-    Serial.println("== restore defaults");
-    for (const char* c : kDefaults) run(c);
-  }
+  restoreDefaults();
   Serial.print("== ");
   Serial.print(done);
   Serial.print(" revs, ");
@@ -260,6 +293,40 @@ void jump(int count, bool keepOrigin) {
     Serial.print(" ms");
   }
   Serial.println();
+}
+
+// Back to angle 0 of the origin the board has now, slowly and the short way
+// round: GN first brings the angle within half an output rev of it.
+void home(float speed) {
+  host.booted = false;
+  host.estopEvent = false;
+  Serial.println("== home: to the current origin (angle 0)");
+  if (!enableHold() || !normalize()) {
+    stopDrive("could not enable / normalize");
+    return;
+  }
+  char vline[16];
+  snprintf(vline, sizeof(vline), "V%.1f", speed);
+  if (run(kHomeAcc) && run(vline)) {
+    RevStats rs;               // only the peaks are meaningful here
+    char line[24];
+    snprintf(line, sizeof(line), "H0,%lu", (unsigned long)kHomeTimeoutMs);
+    run(line, kHomeTimeoutMs + 10000, onSample, &rs);
+    if (const char* why = moveProblem(rs)) {
+      stopDrive(why);
+    } else {
+      Serial.print("     at origin: settle ");
+      Serial.print(cmd.result.as<ResMove>().elapsed_ms);
+      Serial.print(" ms  err ");
+      Serial.print(cmd.result.as<ResMove>().err * 1000.0f, 0);
+      Serial.print(" mrad  |vel|max ");
+      Serial.print(rs.vel_max, 1);
+      Serial.print(" rad/s  |Iq|pk ");
+      Serial.print(rs.iq_peak, 1);
+      Serial.println(" A");
+    }
+  }
+  restoreDefaults();
 }
 
 void printStats() {
@@ -286,6 +353,19 @@ void handleLine(char* line) {
   } else if (strncmp(line, "jump", 4) == 0) {
     int n = atoi(line + 4);
     jump(n > 0 ? n : 3, false);
+  } else if (strcmp(line, "origin") == 0) {
+    if (!setOrigin()) Serial.println("!!! origin not set");
+  } else if (strncmp(line, "home", 4) == 0) {
+    float v = line[4] ? atof(line + 4) : kHomeSpeed;
+    if (v < kHomeSpeedMin || v > kHomeSpeedMax) {
+      Serial.print("home: speed must be ");
+      Serial.print(kHomeSpeedMin, 0);
+      Serial.print("..");
+      Serial.print(kHomeSpeedMax, 0);
+      Serial.println(" rad/s");
+    } else {
+      home(v);
+    }
   } else if (line[0] == 'c' && line[1] == ' ') {
     run(line + 2);
   } else if (strcmp(line, "s") == 0) {
@@ -294,7 +374,7 @@ void handleLine(char* line) {
   } else if (strcmp(line, "stat") == 0) {
     printStats();
   } else if (line[0]) {
-    Serial.println("commands: jump [n] | jumpk [n] | c <board command> | s | stat");
+    Serial.println("commands: jump [n] | jumpk [n] | origin | home [v] | c <board command> | s | stat");
   }
 }
 }  // namespace
@@ -308,7 +388,7 @@ void setup() {
     Serial.println("INIT FAIL: check power, JP1, SPI wiring, CS D9 and RESET D7; then reset.");
     while (true) delay(1000);
   }
-  Serial.println("ready: jump [n] | jumpk [n] | c <board command> | s | stat");
+  Serial.println("ready: jump [n] | jumpk [n] | origin | home [v] | c <board command> | s | stat");
 }
 
 void loop() {
